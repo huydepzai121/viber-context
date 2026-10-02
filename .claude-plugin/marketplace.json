@@ -1,0 +1,16 @@
+{
+  "name": "viber-context-local",
+  "owner": { "name": "Nguyễn Thế Huy" },
+  "metadata": {
+    "description": "Plugin nội bộ, chỉ cài từ thư mục này trên máy"
+  },
+  "plugins": [
+    {
+      "name": "viber-context",
+      "source": "./plugin",
+      "description": "Tự khởi động, đăng ký và lập chỉ mục dự án với vibervn-context-engine; cho Claude công cụ truy xuất codebase như Augment",
+      "version": "0.1.0",
+      "author": { "name": "Nguyễn Thế Huy" }
+    }
+  ]
+}
