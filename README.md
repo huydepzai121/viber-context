@@ -1,6 +1,6 @@
 # viber-context
 
-Plugin Claude Code **dùng nội bộ**, chỉ cài từ thư mục này trên máy. Không push, không đăng marketplace công khai.
+Plugin Claude Code **dùng nội bộ**, cài từ thư mục này trên máy. Mã nguồn lưu ở repo GitHub riêng tư `huydepzai121/viber-context`, không đăng marketplace công khai.
 
 Làm cho `vibervn-context-engine` chạy trên máy hoạt động giống Augment: mỗi phiên Claude Code tự lo engine và chỉ mục, Claude có công cụ truy xuất codebase và được dặn khi nào nên dùng.
 
