@@ -10,7 +10,11 @@ Làm cho `vibervn-context-engine` chạy trên máy hoạt động giống Augme
 2. Nếu engine (`http://127.0.0.1:6699`) chưa trả lời thì khởi động nền `vibervn-context-engine --port 6699`, chờ tối đa 20 giây. Đang chạy thì không đụng.
 3. Chưa có trong `repos` của engine thì thêm vào qua `PUT /api/config` (giữ nguyên mọi trường khác, không bao giờ xoá repo).
 4. Gọi lập chỉ mục tăng dần một lần, theo dõi mỗi 3 giây (tối đa 10 phút).
-5. Dòng trạng thái: `ctx ◌ lập chỉ mục 40/120`, rồi `ctx ● 1.234 file · còn 8 search · 15 ngày`. Có `⚠` ở đầu khi còn ≤ 5% (hoặc ≤ 50) lượt search hoặc ≤ 3 ngày; `ctx ✗ hết lượt search` hoặc `ctx ✗ gói đã hết hạn` khi hết. Toast một lần mỗi phiên khi chuyển sang cảnh báo hoặc hết.
+5. Dòng trạng thái (đọc `state`, `phase`, `indexed_files`, `total_files` từ engine, không bao giờ hiện `0/0`):
+   - **Lần đầu** (repo chưa có `last_indexed_at` hoặc 0 file): `ctx ◌ đang bật engine…` → `ctx ◌ lần đầu lập chỉ mục · đang quét file…` → `ctx ◌ lập chỉ mục ▰▰▰▱▱▱▱▱▱▱ 32% · 347/1.084 file · còn ~1m 20s` (ETA tính từ tốc độ giữa các lần lấy mẫu, chưa có thì bỏ) → `ctx ◌ nối quan hệ gọi hàm…` → dòng sẵn sàng, kèm một toast `✓ viber-context: đã lập chỉ mục 1.084 file trong 2m 14s`. Phase lạ hoặc `symbol_index` hiện `ctx ◌ lập chỉ mục…`.
+   - **Các lần sau**: `ctx ◌ kiểm tra thay đổi…`, nếu engine đang xử lý file đã đổi thì `ctx ◌ cập nhật N file đã đổi…`, rồi dòng sẵn sàng. Không thanh tiến độ, không toast. Xong là dừng theo dõi nên sửa file trong lúc làm việc không đổi dòng này (engine tự lập chỉ mục lại âm thầm).
+   - **Sẵn sàng**: `ctx ● 1.234 file · còn 8 search · 15 ngày`. Có `⚠` ở đầu khi còn ≤ 5% (hoặc ≤ 50) lượt search hoặc ≤ 3 ngày; `ctx ✗ hết lượt search` hoặc `ctx ✗ gói đã hết hạn` khi hết. Toast một lần mỗi phiên khi chuyển sang cảnh báo hoặc hết.
+   - Quá 10 phút chưa xong: giữ số liệu gói và thêm `· chỉ mục chưa xong (/ctx reindex)`.
 
 ## Công cụ cho Claude
 
@@ -18,6 +22,10 @@ Làm cho `vibervn-context-engine` chạy trên máy hoạt động giống Augme
 - `mcp__viber-context__file_retrieval`: biết file rồi nhưng chưa biết dòng nào.
 
 Phần dặn trong system prompt (tiếng Anh) bảo Claude gọi retrieval trước khi đọc nhiều file, dùng Grep cho chuỗi chính xác, và tránh truy vấn lặp vì mỗi lượt search tính vào gói. Hết lượt hoặc hết hạn thì công cụ trả lời ngay (không gọi engine) và prompt báo retrieval không dùng được.
+
+## Thẻ kết quả trong hội thoại
+
+Mỗi lần gọi `codebase_retrieval` / `file_retrieval` hiện một thẻ (chữ trên thẻ bằng tiếng Anh, cùng kiểu thẻ của plugin acp-ui): `✓ ◎ Retrieval <câu hỏi>` và bên phải `4 chunks · 0.8s`; tối đa 4 dòng kết quả `đường/dẫn#L10-24`, dòng code đầu của khối, `← nơi gọi`, `→ hàm được gọi` (đọc từ chính văn bản engine trả về, không đọc được thì không có dòng nào); cuối thẻ `9,991 searches left` (`⚠` màu vàng khi sắp hết). Đang chạy thẻ nền xanh với `◌`. Gọi bị bỏ qua vì hết lượt hoặc hết hạn thì `✗ ... skipped` kèm gợi ý dùng Grep / Read. Dòng kết quả thô bên dưới được ẩn (Claude vẫn nhận đủ văn bản); lỗi vẫn hiện như thường.
 
 ## Lệnh
 

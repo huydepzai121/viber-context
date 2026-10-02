@@ -1,6 +1,6 @@
 // Pure helpers: no host calls, so they are safe to share and to test.
 
-import type { PlanInfo } from '../types'
+import type { CardRow, IndexInfo, PlanInfo } from '../types'
 
 export const ENGINE = 'http://127.0.0.1:6699'
 export const ENGINE_PORT = 6699
@@ -137,4 +137,83 @@ export function planBlock(plan: PlanInfo, now: number): string {
   else if (level === 'out') lines.push(`Đã hết lượt search: mua thêm hoặc gia hạn trong giao diện web của engine ${ENGINE}.`)
   else if (level === 'warn') lines.push(`Sắp hết gói: gia hạn hoặc mua thêm trong giao diện web của engine ${ENGINE}.`)
   return lines.join('\n')
+}
+
+export const NO_INDEX: IndexInfo = {
+  state: '', phase: '', phaseDone: 0, phaseTotal: 0, indexed: 0, total: 0, done: false, timedOut: false, error: '',
+  baseline: '', first: false, sawBusy: false, ticks: 0, startedAt: 0, sampleAt: 0, sampleDone: 0, etaMs: -1,
+}
+
+// 125 s -> "2m 5s", 45 s -> "45s", 3900 s -> "1h 5m". At least one second.
+export function duration(ms: number): string {
+  const s = Math.max(1, Math.round(ms / 1000))
+  if (s < 60) return `${s}s`
+  if (s < 3600) return s % 60 === 0 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 60)}m ${s % 60}s`
+  const m = Math.floor((s % 3600) / 60)
+  return m === 0 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 3600)}h ${m}m`
+}
+
+export const eta = (ms: number): string => `~${duration(ms)}`
+
+export function meter(ratio: number, cells = 10): string {
+  const on = Math.max(0, Math.min(cells, Math.round(ratio * cells)))
+  return '▰'.repeat(on) + '▱'.repeat(cells - on)
+}
+
+// The line for an index run that is not finished. The engine's phase values:
+// idle (no stage yet), embedding (indexed_files / total_files), symbol_index,
+// resolve_edges. While embedding, total_files is the run's workset: every file
+// of a first run, only the changed ones of a later run; 0 until the scan ends.
+export function progressLine(i: IndexInfo): string {
+  if (i.startedAt === 0) return 'ctx ◌ đang bật engine…'
+  const busy = i.state === 'indexing'
+  if (busy && i.phase === 'resolve_edges') return 'ctx ◌ nối quan hệ gọi hàm…'
+  if (busy && i.phase !== 'embedding' && i.phase !== 'idle') return 'ctx ◌ lập chỉ mục…'
+  const counted = busy && i.phase === 'embedding' && i.total > 0
+  if (!i.first) return counted ? `ctx ◌ cập nhật ${vn(i.total)} file đã đổi…` : 'ctx ◌ kiểm tra thay đổi…'
+  if (!counted) return 'ctx ◌ lần đầu lập chỉ mục · đang quét file…'
+  const ratio = Math.min(1, i.indexed / i.total)
+  return `ctx ◌ lập chỉ mục ${meter(ratio)} ${Math.round(ratio * 100)}% · ${vn(i.indexed)}/${vn(i.total)} file${i.etaMs >= 0 ? ` · còn ${eta(i.etaMs)}` : ''}`
+}
+
+// 1234567 -> "1,234,567".
+export const en = (n: number): string => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+
+export type Retrieval = { chunks: number; rows: CardRow[] }
+
+const HEADER = /^(\S.*?)#L(\d+)-(\d+)((?: \[(?:callers|calls):[^\]]*\])*)\s*$/
+const TAG = (name: string) => new RegExp(`\\[${name}:\\s*([^\\]]*)\\]`)
+
+// Reads the engine's formatted result: blocks of `path#Lstart-end [callers: a,
+// b +N more] [calls: x]` followed by numbered code lines (`12: code`), blocks
+// separated by a blank line. Anything else (an empty-result message, the
+// truncation footer) yields no block.
+export function parseRetrieval(result: string): Retrieval {
+  const lines = result.split(/\r?\n/)
+  const rows: CardRow[] = []
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? ''
+    if (/^\d+: /.test(line)) continue
+    const m = HEADER.exec(line)
+    if (!m) continue
+    const tags = m[4] ?? ''
+    const code = (lines[i + 1] ?? '').match(/^\d+: (.*)$/)
+    rows.push({
+      path: m[1] ?? '',
+      start: Number(m[2]),
+      end: Number(m[3]),
+      symbol: (code?.[1] ?? '').trim(),
+      callers: (TAG('callers').exec(tags)?.[1] ?? '').trim(),
+      calls: (TAG('calls').exec(tags)?.[1] ?? '').trim(),
+    })
+  }
+  return { chunks: rows.length, rows }
+}
+
+// The path relative to the project root when it lies under it, with `/`.
+export function shortPath(root: string, path: string): string {
+  const flat = path.replace(/\\/g, '/')
+  const base = root.replace(/\\/g, '/').replace(/\/+$/, '')
+  if (base !== '' && flat.toLowerCase().startsWith(`${base.toLowerCase()}/`)) return flat.slice(base.length + 1)
+  return flat
 }

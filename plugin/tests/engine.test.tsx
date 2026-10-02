@@ -65,12 +65,12 @@ test('registered root: no PUT', async ($, on) => {
   expect(fake.calls.some(c => c.method === 'POST' && c.path.endsWith('/index'))).toBe(true)
 })
 
-test('the index status line follows the engine from indexing to done', async ($, on) => {
+test('a later run says it checks for changes, then shows the ready line', async ($, on) => {
   const fake = setup(on, { ...WIN, repos: [NORM] })
   await $.session.start(session(WIN.cwd))
   await fake.clock.advance(10_000)
 
-  expect(fake.statuses.some(s => s.includes('lập chỉ mục 40/120'))).toBe(true)
+  expect(fake.statuses).toContain('ctx ◌ kiểm tra thay đổi…')
   expect(fake.statuses.at(-1)).toContain('ctx ● 120 file')
 })
 

@@ -1,10 +1,10 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, Timer } from 'claude-code'
+import type { BoxProps, ElementConstructor, EngineInterface, Register, RenderElement, TextProps, Timer } from 'claude-code'
 
-import type { IndexInfo, Mode, PlanInfo } from '../types'
+import type { Card, IndexInfo, Mode, PlanInfo } from '../types'
 import {
-  ENGINE, ENGINE_PORT, PROMPT_SECTION, PROMPT_SECTION_UNAVAILABLE, daysLeft, isFilesystemRoot, isWindowsPath,
-  normalizeRepo, planBlock, planLevel, repoId, vn, withFilters,
+  ENGINE, ENGINE_PORT, NO_INDEX, PROMPT_SECTION, PROMPT_SECTION_UNAVAILABLE, daysLeft, duration, en, isFilesystemRoot,
+  isWindowsPath, normalizeRepo, parseRetrieval, planBlock, planLevel, progressLine, repoId, shortPath, vn, withFilters,
 } from './lib'
 
 const PLUGIN = 'viber-context'
@@ -19,16 +19,16 @@ const INDEX_MAX_MS = 10 * 60 * 1000
 const PLAN_POLL_MS = 10 * 60 * 1000
 // Idle polls to wait before an index run that never showed a busy state counts as done.
 const IDLE_GRACE_TICKS = 3
+const FIRST_GRACE_TICKS = 10
 
 const rootAtom = atom({ plugin: 'viber-context', key: 'root' } as const, '')
 // 'on' retrieval is wired up; 'off' the person turned it off for this root;
 // 'skipped' the directory is a home or filesystem root, never indexed.
 const modeAtom = atom({ plugin: 'viber-context', key: 'mode' } as const, 'skipped' as Mode)
 const engineAtom = atom({ plugin: 'viber-context', key: 'engine' } as const, 'unknown' as 'unknown' | 'up' | 'down')
-const indexAtom = atom(
-  { plugin: 'viber-context', key: 'index' } as const,
-  { state: '', indexed: 0, total: 0, done: false, error: '', baseline: '', sawBusy: false, ticks: 0, startedAt: 0 } as IndexInfo,
-)
+const indexAtom = atom({ plugin: 'viber-context', key: 'index' } as const, NO_INDEX)
+const cardsAtom = atom({ plugin: 'viber-context', key: 'cards' } as const, {} as Record<string, Card>)
+const MAX_CARDS = 50
 const faultAtom = atom({ plugin: 'viber-context', key: 'fault' } as const, '')
 const NO_PLAN: PlanInfo = { known: false, name: '', expiresAt: 0, searchLeft: 0, searchLimit: 0, embedLeft: 0, embedLimit: 0 }
 const planAtom = atom({ plugin: 'viber-context', key: 'plan' } as const, NO_PLAN)
@@ -92,14 +92,8 @@ async function setIndex($: EngineInterface, patch: Partial<IndexInfo>): Promise<
   await update($, indexAtom, cur => ({ ...cur, ...patch }))
 }
 
-function indexLine(info: IndexInfo): string {
-  if (info.error) return 'ctx ✗ lỗi lập chỉ mục'
-  if (info.done) return `ctx ● ${vn(info.indexed)} file`
-  if (info.startedAt === 0) return 'ctx ◌ đang khởi động'
-  return `ctx ◌ lập chỉ mục ${vn(info.indexed)}/${vn(info.total)}`
-}
-
-// The one status line: a fault, else the index part with the plan's numbers.
+// The one status line: a fault; the run's progress while it works; once it is
+// over (done, timed out or failed) the ready line with the plan's numbers.
 async function refreshStatus($: EngineInterface): Promise<void> {
   if ((await read($, modeAtom)) !== 'on') {
     $.ui.status(undefined)
@@ -110,16 +104,20 @@ async function refreshStatus($: EngineInterface): Promise<void> {
     $.ui.status(fault)
     return
   }
+  const index = await read($, indexAtom)
+  if (index.error) return $.ui.status('ctx ✗ lỗi lập chỉ mục')
+  if (!index.done && !index.timedOut) return $.ui.status(progressLine(index))
   const plan = await read($, planAtom)
   const now = await $.clock.now()
   const level = planLevel(plan, now)
   if (level === 'expired') return $.ui.status('ctx ✗ gói đã hết hạn')
   if (level === 'out') return $.ui.status('ctx ✗ hết lượt search')
-  const parts = [indexLine(await read($, indexAtom))]
+  const parts = [`ctx ● ${vn(index.indexed)} file`]
   if (plan.known) {
     parts.push(`còn ${vn(plan.searchLeft)} search`)
     if (plan.expiresAt > 0) parts.push(`${daysLeft(plan.expiresAt, now)} ngày`)
   }
+  if (!index.done) parts.push('chỉ mục chưa xong (/ctx reindex)')
   $.ui.status(`${level === 'warn' ? '⚠ ' : ''}${parts.join(' · ')}`)
 }
 
@@ -228,48 +226,65 @@ const IDLE_STATES = new Set(['idle', 'indexed'])
 async function pollOnce($: EngineInterface, norm: string): Promise<void> {
   try {
     const cur = await read($, indexAtom)
-    if ((await $.clock.now()) - cur.startedAt > INDEX_MAX_MS) {
+    const now = await $.clock.now()
+    if (now - cur.startedAt > INDEX_MAX_MS) {
       stopPolling()
-      await setFault($, 'ctx ◌ lập chỉ mục quá lâu, /ctx để xem')
+      await setIndex($, { timedOut: true })
+      await refreshStatus($)
       return
     }
     const res = await api($, 'GET', `/api/repos/${repoId(norm)}/status`)
     if (!res.ok) return
     const s = parse(res.body)
     const state = text(s.state)
+    const phase = text(s.phase) || 'idle'
+    const indexed = typeof s.indexed_files === 'number' ? s.indexed_files : cur.indexed
+    const total = typeof s.total_files === 'number' ? s.total_files : cur.total
     const ticks = cur.ticks + 1
     const sawBusy = cur.sawBusy || (state !== '' && state !== 'error' && !IDLE_STATES.has(state))
-    const settled = IDLE_STATES.has(state) && (sawBusy || text(s.last_indexed_at) !== cur.baseline || ticks >= IDLE_GRACE_TICKS)
+    // A first run that never shows a busy state is given longer before it counts as empty.
+    const grace = cur.first ? FIRST_GRACE_TICKS : IDLE_GRACE_TICKS
+    const settled = IDLE_STATES.has(state) && (sawBusy || text(s.last_indexed_at) !== cur.baseline || ticks >= grace)
+
+    // ETA from the rate between the first progress sample and this one.
+    let { sampleAt, sampleDone } = cur
+    let etaMs = -1
+    if (state === 'indexing' && phase === 'embedding' && total > 0) {
+      if (sampleAt === 0) {
+        sampleAt = now
+        sampleDone = indexed
+      } else if (indexed > sampleDone && now > sampleAt) {
+        etaMs = ((total - indexed) * (now - sampleAt)) / (indexed - sampleDone)
+      }
+    }
+    const failed = state === 'error'
     await setIndex($, {
-      state,
-      indexed: typeof s.indexed_files === 'number' ? s.indexed_files : cur.indexed,
-      total: typeof s.total_files === 'number' ? s.total_files : cur.total,
-      error: state === 'error' ? text(s.error) || 'error' : '',
-      sawBusy,
-      ticks,
-      done: settled,
+      state, phase, phaseDone: num(s.phase_done), phaseTotal: num(s.phase_total), indexed, total,
+      error: failed ? text(s.error) || 'error' : '', sawBusy, ticks, done: settled, sampleAt, sampleDone, etaMs,
     })
     await refreshStatus($)
-    if (settled || state === 'error') stopPolling()
+    if (settled || failed) stopPolling()
+    // Only a first run is worth a toast; later runs finish quietly.
+    if (settled && cur.first) $.ui.toast(`✓ viber-context: đã lập chỉ mục ${vn(indexed)} file trong ${duration(now - cur.startedAt)}`)
   } catch {
     // A failed poll is retried on the next tick.
   }
 }
 
-// One incremental index run for the root, then a status poll every 3 s.
+// One incremental index run for the root, then a status poll every 3 s. A repo
+// with no last_indexed_at or no files has never been indexed: its run is the
+// first one, which shows progress and ends in a toast.
 async function startIndex($: EngineInterface, norm: string): Promise<boolean> {
   const id = repoId(norm)
   const before = parse((await api($, 'GET', `/api/repos/${id}/status`)).body)
+  const first = text(before.last_indexed_at) === '' || num(before.indexed_files) === 0
   const started = await api($, 'POST', `/api/repos/${id}/index`)
   if (!started.ok) {
     await setFault($, 'ctx ✗ không lập chỉ mục được')
     return false
   }
-  await update($, indexAtom, () => ({
-    state: 'queued', indexed: 0, total: 0, done: false, error: '',
-    baseline: text(before.last_indexed_at), sawBusy: false, ticks: 0, startedAt: 0,
-  }))
-  await setIndex($, { startedAt: await $.clock.now() })
+  const now = await $.clock.now()
+  await update($, indexAtom, () => ({ ...NO_INDEX, baseline: text(before.last_indexed_at), first, startedAt: now }))
   await setFault($, '')
   stopPolling()
   poller = $.clock.every(INDEX_POLL_MS, () => {
@@ -281,7 +296,9 @@ async function startIndex($: EngineInterface, norm: string): Promise<boolean> {
 // Engine up, repo registered, index started, plan watched: the whole pipeline.
 async function boot($: EngineInterface, norm: string, windows: boolean): Promise<void> {
   try {
-    await refreshStatus($)
+    stopPolling()
+    await update($, indexAtom, () => NO_INDEX)
+    await setFault($, '')
     if (!(await ensureEngine($, windows))) return await setFault($, 'ctx ✗ engine chưa chạy')
     startPlanTimer($)
     detach(refreshPlan($))
@@ -316,22 +333,37 @@ const reply = (body: string) => ({ result: body, text: body })
 const fallback = (why: string): string =>
   `Không truy xuất được codebase qua context engine (${why}). Hãy dùng Grep/Glob/Read để tìm code thay thế.`
 
+type Outcome = { text: string; skipped: Card['skipped'] }
+const unavailable = (body: string): Outcome => ({ text: body, skipped: 'failed' })
+
 // The shared body of both tools: gate on mode and plan, post to the engine, relay `result`.
-async function retrieve($: EngineInterface, path: string, payload: Fields): Promise<string> {
+async function retrieve($: EngineInterface, path: string, payload: Fields): Promise<Outcome> {
   const mode = await read($, modeAtom)
-  if (mode === 'skipped') return fallback('thư mục này là thư mục home hoặc gốc ổ đĩa nên không được lập chỉ mục')
-  if (mode === 'off') return 'Truy xuất codebase đang tắt cho dự án này (/ctx on để bật lại). Hãy dùng Grep/Glob/Read.'
+  if (mode === 'skipped') return unavailable(fallback('thư mục này là thư mục home hoặc gốc ổ đĩa nên không được lập chỉ mục'))
+  if (mode === 'off') return unavailable('Truy xuất codebase đang tắt cho dự án này (/ctx on để bật lại). Hãy dùng Grep/Glob/Read.')
   const level = planLevel(await read($, planAtom), await $.clock.now())
-  if (level === 'expired') return fallback('gói dịch vụ của context engine đã hết hạn, không gọi engine')
-  if (level === 'out') return fallback('đã hết lượt search của gói dịch vụ, không gọi engine')
+  if (level === 'expired') return { text: fallback('gói dịch vụ của context engine đã hết hạn, không gọi engine'), skipped: 'expired' }
+  if (level === 'out') return { text: fallback('đã hết lượt search của gói dịch vụ, không gọi engine'), skipped: 'quota' }
   const root = await read($, rootAtom)
   const res = await api($, 'POST', path, { ...payload, workspace_full_path: root })
-  if (res.status === 0) return fallback('engine chưa chạy')
+  if (res.status === 0) return unavailable(fallback('engine chưa chạy'))
   // The engine answered, so a search was spent (or refused): refresh the numbers.
   detach(refreshPlan($))
-  if (!res.ok) return fallback(`engine trả HTTP ${res.status}: ${res.body.slice(0, 300)}`)
+  if (!res.ok) return unavailable(fallback(`engine trả HTTP ${res.status}: ${res.body.slice(0, 300)}`))
   const out = parse(res.body).result
-  return typeof out === 'string' ? out : res.body
+  return { text: typeof out === 'string' ? out : res.body, skipped: '' }
+}
+
+// Keeps what the transcript card draws for this call; the newest MAX_CARDS stay.
+async function recordCard($: EngineInterface, id: string, startedAt: number, out: Outcome): Promise<void> {
+  const parsed = out.skipped === '' ? parseRetrieval(out.text) : { chunks: 0, rows: [] }
+  const card: Card = { ms: Math.max(0, (await $.clock.now()) - startedAt), chunks: parsed.chunks, rows: parsed.rows, skipped: out.skipped }
+  await update($, cardsAtom, all => {
+    const next = { ...all, [id]: card }
+    const ids = Object.keys(next)
+    for (const old of ids.slice(0, Math.max(0, ids.length - MAX_CARDS))) delete next[old]
+    return next
+  })
 }
 
 async function describeState($: EngineInterface, planOnly: boolean): Promise<string> {
@@ -358,6 +390,133 @@ async function describeState($: EngineInterface, planOnly: boolean): Promise<str
   lines.push('', plan)
   return lines.join('\n')
 }
+
+// ---------------------------------------------------------------------------
+// The retrieval card. A terminal Box paints no background, so every row is one
+// Text whose background runs the full width; the top and bottom edges are
+// quadrant blocks, giving half a row of padding and corners cut by half a cell.
+
+type TextEl = ElementConstructor<TextProps>
+type BoxEl = ElementConstructor<BoxProps>
+type Seg = { text: string; color?: string; bold?: boolean }
+
+const C = {
+  card: '#27282B',
+  running: '#1B2A40',
+  text: '#E0E1E4',
+  soft: '#C3C5C9',
+  dim: '#909192',
+  faint: '#696A6B',
+  path: '#71A3EF',
+  icon: '#AF9CFF',
+  ok: '#69B090',
+  run: '#4B8DEC',
+  error: '#F87C88',
+  warn: '#E5BF8C',
+}
+const CARD_ROWS = 4
+
+const cells = (s: string): number => [...s].length
+const segCells = (segs: Seg[]): number => segs.reduce((n, s) => n + cells(s.text), 0)
+
+// Cuts a run of segments to `max` cells, ending in an ellipsis.
+function fitSegs(segs: Seg[], max: number): Seg[] {
+  if (segCells(segs) <= max) return segs
+  const out: Seg[] = []
+  let room = max - 1
+  for (const s of segs) {
+    if (room <= 0) break
+    const taken = [...s.text].slice(0, room).join('')
+    out.push({ ...s, text: taken })
+    room -= cells(taken)
+  }
+  out.push({ text: '…', color: C.dim })
+  return out
+}
+
+const cardWidth = (columns: number | undefined): number => Math.max(40, Math.min((columns ?? 100) - 4, 120))
+
+function paint(Text: TextEl, bg: string, width: number, segs: Seg[]): RenderElement {
+  const used = 1 + segCells(segs)
+  return (
+    <Text backgroundColor={bg}>
+      {' '}
+      {segs.map(s => (
+        <Text color={s.color} bold={s.bold} backgroundColor={bg}>{s.text}</Text>
+      ))}
+      {' '.repeat(Math.max(0, width - used))}
+    </Text>
+  )
+}
+
+// `left` at the start of the row and `right` flush to its end.
+function split(Text: TextEl, bg: string, width: number, left: Seg[], right: Seg[]): RenderElement {
+  const rightCells = segCells(right)
+  const room = width - 2 - (rightCells > 0 ? rightCells + 2 : 0)
+  const shown = fitSegs(left, Math.max(8, room))
+  const gap = Math.max(2, width - 2 - segCells(shown) - rightCells)
+  return paint(Text, bg, width, rightCells > 0 ? [...shown, { text: ' '.repeat(gap) }, ...right] : shown)
+}
+
+const SKIPPED: Record<Exclude<Card['skipped'], ''>, string> = {
+  quota: 'Search quota used up. Use Grep / Read instead; renew the plan at 127.0.0.1:6699.',
+  expired: 'Plan expired. Use Grep / Read instead; renew the plan at 127.0.0.1:6699.',
+  failed: 'Engine unavailable. Use Grep / Read instead.',
+}
+
+async function retrievalCard($: EngineInterface, e: { props: { tool_use_id: string; input: unknown; isRunning: boolean; isErrored: boolean; isInterrupted: boolean }; viewport?: { columns?: number } }, label: string, Box: BoxEl, Text: TextEl): Promise<RenderElement> {
+  const props = e.props
+  const [cards, plan, root, now] = await Promise.all([read($, cardsAtom), read($, planAtom), read($, rootAtom), $.clock.now()])
+  const card = cards[props.tool_use_id]
+  const width = cardWidth(e.viewport?.columns)
+  const bg = props.isRunning ? C.running : C.card
+  const bad = props.isErrored || props.isInterrupted || (card !== undefined && card.skipped !== '')
+  const status: Seg = props.isRunning ? { text: '◌', color: C.run } : bad ? { text: '✗', color: C.error } : { text: '✓', color: C.ok }
+  const request = text(fields(props.input).information_request).replace(/\s+/g, ' ').trim()
+  const right: Seg[] =
+    card === undefined || props.isRunning ? []
+    : card.skipped !== '' ? [{ text: 'skipped', color: C.dim }]
+    : [{ text: `${card.chunks} ${card.chunks === 1 ? 'chunk' : 'chunks'} · ${(card.ms / 1000).toFixed(1)}s`, color: C.dim }]
+
+  const rows: RenderElement[] = [
+    split(Text, bg, width, [status, { text: ' ' }, { text: '◎', color: C.icon }, { text: ' ' }, { text: label, color: C.dim }, { text: '  ' }, { text: request, color: C.text }], right),
+  ]
+  if (card !== undefined && !props.isRunning) {
+    if (card.skipped !== '') {
+      rows.push(paint(Text, bg, width, fitSegs([{ text: '  ' }, { text: SKIPPED[card.skipped], color: C.soft }], width - 2)))
+    }
+    for (const row of card.rows.slice(0, CARD_ROWS)) {
+      // The code line gives way first: the path and the caller/callee tags stay whole.
+      const head: Seg[] = [{ text: '  ' }, { text: shortPath(root, row.path), color: C.path }, { text: `#L${row.start}-${row.end}`, color: C.faint }]
+      const tail: Seg[] = [
+        ...(row.callers === '' ? [] : [{ text: '  ' }, { text: `← ${row.callers}`, color: C.faint }]),
+        ...(row.calls === '' ? [] : [{ text: '  ' }, { text: `→ ${row.calls}`, color: C.faint }]),
+      ]
+      const room = width - 2 - segCells(head) - segCells(tail) - 2
+      const code: Seg[] = row.symbol === '' || room < 8 ? [] : [{ text: '  ' }, ...fitSegs([{ text: row.symbol, color: C.soft }], room)]
+      rows.push(paint(Text, bg, width, fitSegs([...head, ...code, ...tail], width - 2)))
+    }
+    if (card.rows.length > CARD_ROWS) {
+      rows.push(paint(Text, bg, width, [{ text: `  +${card.rows.length - CARD_ROWS} more`, color: C.faint }]))
+    }
+  }
+  if (plan.known && !props.isRunning) {
+    const level = planLevel(plan, now)
+    const left = `${en(plan.searchLeft)} searches left`
+    const note: Seg = level === 'ok' ? { text: left, color: C.dim } : { text: `⚠ ${left}`, color: C.warn }
+    rows.push(split(Text, bg, width, [], [note]))
+  }
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text color={bg}>{`▗${'▄'.repeat(Math.max(0, width - 2))}▖`}</Text>
+      {rows}
+      <Text color={bg}>{`▝${'▀'.repeat(Math.max(0, width - 2))}▘`}</Text>
+    </Box>
+  )
+}
+
+const CARD_LABEL: Record<string, string> = { [RETRIEVAL_ID]: 'Retrieval', [FILE_RETRIEVAL_ID]: 'File retrieval' }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
@@ -429,7 +588,10 @@ export const register: Register = on => {
   on('tool.call', { tool: RETRIEVAL_ID }, async ($, e) => {
     const input = fields(e)
     if (text(input.information_request).trim() === '') return reply('Thiếu information_request. Hãy mô tả chi tiết thứ cần tìm.')
-    return reply(await retrieve($, '/api/mcp-tool', { information_request: withFilters(input) }))
+    const startedAt = await $.clock.now()
+    const out = await retrieve($, '/api/mcp-tool', { information_request: withFilters(input) })
+    await recordCard($, e.tool_use_id, startedAt, out)
+    return reply(out.text)
   })
 
   on('tool.call', { tool: FILE_RETRIEVAL_ID }, async ($, e) => {
@@ -438,11 +600,14 @@ export const register: Register = on => {
       return reply('Thiếu file_path hoặc information_request.')
     }
     const top = typeof input.top_k === 'number' && Number.isFinite(input.top_k) ? { top_k: Math.max(1, Math.round(input.top_k)) } : {}
-    return reply(await retrieve($, '/api/mcp-tool/file-retrieval', {
+    const startedAt = await $.clock.now()
+    const out = await retrieve($, '/api/mcp-tool/file-retrieval', {
       file_path: text(input.file_path).trim(),
       information_request: text(input.information_request).trim(),
       ...top,
-    }))
+    })
+    await recordCard($, e.tool_use_id, startedAt, out)
+    return reply(out.text)
   })
 
   on('command.run', { command: 'ctx' }, async ($, e) => {
@@ -471,4 +636,19 @@ export const register: Register = on => {
     }
     return { text: await describeState($, arg === 'goi') }
   })
+
+  // The card replaces the raw result row; the model still reads the full text.
+  on('ui.render', { component: 'ToolUse', surface: 'terminal' }, async ($, e, next) => {
+    const label = CARD_LABEL[e.props.tool]
+    if (label === undefined) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    return retrievalCard($, e, label, Box, Text)
+  })
+
+  on('ui.render', { component: 'ToolResult', surface: 'terminal' }, ($, e, next) => {
+    if (e.props.isErrored || CARD_LABEL[e.props.tool] === undefined) return next(e)
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  })
+
 }

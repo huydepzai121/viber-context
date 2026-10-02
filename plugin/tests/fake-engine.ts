@@ -24,6 +24,9 @@ export type Fake = {
   starts: string[][]
   statuses: string[]
   toasts: string[]
+  // The status before an index run, and what each poll after the POST answers (the last repeats).
+  before: Record<string, unknown>
+  script: Record<string, unknown>[]
   clock: ReturnType<typeof mock.clock>
 }
 
@@ -50,6 +53,8 @@ export type Setup = {
   upAfter?: number
   home?: string
   searchLeft?: number
+  // The repo was never indexed.
+  first?: boolean
   expiresAt?: number
 }
 
@@ -68,6 +73,13 @@ export function setup(on: On, s: Setup): Fake {
     starts: [],
     statuses: [],
     toasts: [],
+    before: s.first === true ? { state: 'idle', indexed_files: 0, total_files: 0, last_indexed_at: null } : { state: 'idle', indexed_files: 120, total_files: 120, last_indexed_at: '2026-10-01T00:00:00Z' },
+    script: [
+      s.first === true
+        ? { state: 'indexing', phase: 'embedding', indexed_files: 40, total_files: 120, last_indexed_at: null }
+        : { state: 'indexing', phase: 'embedding', indexed_files: 0, total_files: 0, last_indexed_at: '2026-10-01T00:00:00Z' },
+      { state: 'idle', phase: 'idle', indexed_files: 120, total_files: 120, last_indexed_at: '2026-10-03T00:01:00Z' },
+    ],
     clock,
   }
   let indexed = false
@@ -122,11 +134,10 @@ export function setup(on: On, s: Setup): Fake {
       return reply(202, { status: 'accepted' })
     }
     if (url.pathname.endsWith('/status')) {
-      if (!indexed) return reply(200, { state: 'idle', indexed_files: 0, total_files: 0, last_indexed_at: null })
+      if (!indexed) return reply(200, fake.before)
+      const step = fake.script[Math.min(polls, fake.script.length - 1)]
       polls += 1
-      return polls < 2
-        ? reply(200, { state: 'indexing', indexed_files: 40, total_files: 120, last_indexed_at: null })
-        : reply(200, { state: 'idle', indexed_files: 120, total_files: 120, last_indexed_at: '2026-10-03T00:01:00Z' })
+      return reply(200, step)
     }
     if (url.pathname.startsWith('/api/mcp-tool')) return reply(fake.mcpStatus, fake.mcpResult)
     return reply(404, {})
