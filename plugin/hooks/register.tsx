@@ -3,8 +3,8 @@ import type { BoxProps, ElementConstructor, EngineInterface, Register, RenderEle
 
 import type { Card, IndexInfo, Mode, PlanInfo } from '../types'
 import {
-  ENGINE, ENGINE_PORT, NO_INDEX, PROMPT_SECTION, PROMPT_SECTION_UNAVAILABLE, daysLeft, duration, en, isFilesystemRoot, isScratchPath,
-  isWindowsPath, normalizeRepo, parseRetrieval, planBlock, planLevel, progressLine, repoId, shortPath, vn, withFilters,
+  CONTEXT_BLOCK, CONTEXT_BLOCK_NAME, ENGINE, ENGINE_PORT, NO_INDEX, PROMPT_SECTION, PROMPT_SECTION_UNAVAILABLE, daysLeft, duration, en, isFilesystemRoot, isScratchPath,
+  isWindowsPath, normalizeRepo, parseRetrieval, planBlock, planLevel, progressLine, repoId, shortPath, stripToolNames, vn, withFilters,
 } from './lib'
 
 const PLUGIN = 'viber-context'
@@ -548,10 +548,9 @@ export const register: Register = on => {
     await $.tool.register({
       name: RETRIEVAL,
       description: [
-        'Semantic search over this project\'s indexed codebase (local context engine). Describe what you need in natural language and it returns the most relevant code snippets with file paths and line ranges.',
-        'Use it for "where / how is X done" questions about THIS codebase, and before editing code you have not read: write one detailed request (what, where, why) instead of reading many files.',
-        'Start with it for broad questions too ("analyze this project", "explain the architecture", "how does X work", "where is Y handled", onboarding or overview): ask e.g. "architecture overview: entry points, main modules, how a request flows", then Read the specific files it points to. Do not use ls/cat/Bash to discover how the code works; only to list folders or read a known file.',
-        'Do NOT use it for exact identifiers, strings or file names (use Grep/Glob) or for questions that are not about the code. Each search uses a limited paid quota, so avoid near-identical repeats.',
+        'Call this FIRST for any question about this codebase (overview, architecture, how X works, where Y is). Semantic search over this project\'s indexed codebase (local context engine): describe what you need in natural language and it returns the most relevant code snippets with file paths and line ranges.',
+        'Write one detailed request (what, where, why) instead of reading many files; for "analyze this project" ask e.g. "architecture overview: entry points, main modules, how a request flows", then Read the specific files it points to. Prefer it over ls/cat/Bash/Explore for discovering how the code works.',
+        'Use Grep/Glob instead for exact identifiers, strings or file names. Avoid near-identical repeat queries.',
         'Optional filters: filter_kind (e.g. function, class), filter_lang (e.g. typescript, rust), filter_path (a path prefix such as src/api).',
       ].join(' '),
       inputSchema: {
@@ -610,6 +609,21 @@ export const register: Register = on => {
     const level = planLevel(await read($, planAtom), await $.clock.now())
     const body = level === 'out' || level === 'expired' ? PROMPT_SECTION_UNAVAILABLE : PROMPT_SECTION
     return { sections: [...composed.sections, { id: 'viber-context:retrieval', text: body, scope: 'session' as const }] }
+  })
+
+  on('prompt.context', async ($, e, next) => {
+    const context = await next(e)
+    if ((await read($, modeAtom)) !== 'on') return context
+    const level = planLevel(await read($, planAtom), await $.clock.now())
+    if (level === 'out' || level === 'expired') return context
+    return { ...context, blocks: [...context.blocks.filter(b => b.name !== CONTEXT_BLOCK_NAME), { name: CONTEXT_BLOCK_NAME, text: CONTEXT_BLOCK }] }
+  })
+
+  // The tools are already in the tool list; the engine's deferred-tools reminder would say they need loading.
+  on('prompt.attachment', { type: 'deferred_tools_delta' }, async ($, e, next) => {
+    const attached = await next(e)
+    if ((await read($, modeAtom)) !== 'on' || attached.text === null) return attached
+    return { ...attached, text: stripToolNames(attached.text, [RETRIEVAL_ID, FILE_RETRIEVAL_ID]) }
   })
 
   on('tool.call', { tool: RETRIEVAL_ID }, async ($, e) => {

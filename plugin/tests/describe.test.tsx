@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { Engine } from 'claude-code/testing'
-import { composeInput, ctxArgs, setup } from './fake-engine'
+import { attachmentInput, composeInput, contextInput, ctxArgs, setup } from './fake-engine'
 
 const WIN = { cwd: 'E:\Dev\www\Proj', top: 'E:/Dev/www/Proj', repos: ['e:\dev\www\proj'] } as const
 const session = (cwd: string) => ({ cwd, surface: null, isInteractive: false }) as const
@@ -50,7 +50,77 @@ test('other tools are not touched and the section covers overview questions', as
 
   expect((await describe($, 'mcp__someone__else')).isDeferred).toBe(true)
   const text = (await $.prompt.compose(composeInput)).sections.at(-1)?.text ?? ''
-  expect(text).toContain('analyze this project')
+  expect(text).toContain('analyze or review the project')
   expect(text).toContain('architecture overview')
-  expect(text).toContain('never to discover how the code works')
+  expect(text).toContain('before Bash, ls, cat, git diff, Glob or reading files')
+  expect(text).not.toContain('speculatively')
+  expect(text).not.toContain('Skip retrieval')
+})
+
+const CTX_BLOCK = 'viberContext'
+const context = ($: Engine) => $.prompt.context(contextInput)
+const DELTA = [
+  'The following deferred tools are now available via ToolSearch. Load them first:',
+  'LSP',
+  'mcp__viber-context__codebase_retrieval',
+  'mcp__other__tool',
+  'mcp__viber-context__file_retrieval',
+].join('\n')
+
+test('prompt.context appends the instruction block after the existing ones', async ($, on) => {
+  setup(on, WIN)
+  await $.session.start(session(WIN.cwd))
+
+  const blocks = (await context($)).blocks
+  expect(blocks.map(b => b.name)).toEqual(['claudeMd', 'userEmail', CTX_BLOCK])
+  expect(blocks[0].text).toBe('rules')
+  expect(blocks[2].text).toContain('ALWAYS call mcp__viber-context__codebase_retrieval FIRST')
+  expect(blocks[2].text).toContain('instead of the Explore subagent')
+})
+
+test('prompt.context adds nothing when off, skipped or the plan is used up', async ($, on) => {
+  setup(on, WIN)
+  await $.session.start(session(WIN.cwd))
+  await $.command.run(ctxArgs('off'))
+  expect((await context($)).blocks.map(b => b.name)).toEqual(['claudeMd', 'userEmail'])
+})
+
+test('prompt.context skips a home directory', async ($, on) => {
+  setup(on, { cwd: 'C:\Users\Admin', top: null, home: 'C:\Users\Admin' })
+  await $.session.start(session('C:\Users\Admin'))
+  expect((await context($)).blocks.map(b => b.name)).toEqual(['claudeMd', 'userEmail'])
+})
+
+test('prompt.context adds nothing when no searches are left or the plan expired', async ($, on) => {
+  const fake = setup(on, { ...WIN, searchLeft: 0 })
+  await $.session.start(session(WIN.cwd))
+  await fake.clock.advance(10_000)
+  expect((await context($)).blocks.map(b => b.name)).toEqual(['claudeMd', 'userEmail'])
+})
+
+test('deferred_tools_delta loses only the retrieval tool lines', async ($, on) => {
+  setup(on, WIN)
+  await $.session.start(session(WIN.cwd))
+
+  const out = await $.prompt.attachment(attachmentInput('deferred_tools_delta', DELTA))
+  expect(out.text).toBe(['The following deferred tools are now available via ToolSearch. Load them first:', 'LSP', 'mcp__other__tool'].join('\n'))
+})
+
+test('deferred_tools_delta that lists only the retrieval tools is left out', async ($, on) => {
+  setup(on, WIN)
+  await $.session.start(session(WIN.cwd))
+
+  const text = ['Heads up:', 'mcp__viber-context__codebase_retrieval', 'mcp__viber-context__file_retrieval'].join('\n')
+  expect((await $.prompt.attachment(attachmentInput('deferred_tools_delta', text))).text).toBeNull()
+})
+
+test('deferred_tools_delta is untouched when off, and other attachments always are', async ($, on) => {
+  setup(on, WIN)
+  await $.session.start(session(WIN.cwd))
+  const other = await $.prompt.attachment(attachmentInput('todo_reminder', DELTA))
+  expect(other.text).toBe(DELTA)
+
+  await $.command.run(ctxArgs('off'))
+  const off = await $.prompt.attachment(attachmentInput('deferred_tools_delta', DELTA))
+  expect(off.text).toBe(DELTA)
 })

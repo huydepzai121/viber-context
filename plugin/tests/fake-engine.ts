@@ -100,6 +100,8 @@ export function setup(on: On, s: Setup): Fake {
     return { value: undefined }
   })
   on('prompt.compose', () => ({ sections: [] }))
+  on('prompt.context', (_$, e) => ({ blocks: e.blocks }))
+  on('prompt.attachment', (_$, e) => ({ text: e.text }))
   on('process.run', (_$, e) => {
     const out = (exitCode: number, stdout: string) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
     if (e.argv[0] === 'git') return s.top === null ? out(128, '') : out(0, `${s.top}\n`)
@@ -160,3 +162,6 @@ export const ctxArgs = (args: string) => ({
 }) as const
 
 export const composeInput = { model: 'm', promptModel: 'm', surfaces: [], tools: [], outputStyle: null, traits: [] } as const
+
+export const contextInput = { blocks: [{ name: 'claudeMd', text: 'rules' }, { name: 'userEmail', text: 'a@b.c' }] } as const
+export const attachmentInput = (type: string, text: string) => ({ type, text, origin: { kind: 'engine' } }) as const

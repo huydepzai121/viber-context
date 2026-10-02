@@ -31,7 +31,13 @@ Bản ghi thẻ (tối đa 50 lần gọi gần nhất) chỉ nằm trong bộ n
 
 ## Vì sao hai công cụ luôn có sẵn
 
-Mặc định Claude Code giấu công cụ MCP sau ToolSearch (mô hình chỉ thấy tên và hiếm khi tải). Khi dự án đang bật, plugin chuyển hai công cụ vào danh sách công cụ của prompt (`tool.describe` với `isDeferred: false`) và system prompt dặn bắt đầu bằng `codebase_retrieval` cho các câu hỏi rộng như "phân tích dự án", "giải thích kiến trúc". `/ctx off`, thư mục home, gốc ổ đĩa hoặc thư mục tạm thì trả vị trí lại cho Claude Code.
+Mặc định Claude Code giấu công cụ MCP sau ToolSearch (mô hình chỉ thấy tên và hiếm khi tải). Khi dự án đang bật, plugin làm ba việc:
+
+- Chuyển hai công cụ vào danh sách công cụ của prompt (`tool.describe` với `isDeferred: false`).
+- Thêm một khối ngữ cảnh `viberContext` vào tin nhắn đầu tiên của người dùng (hook `prompt.context`, cùng kênh với CLAUDE.md) dặn gọi `codebase_retrieval` TRƯỚC cho mọi câu hỏi về codebase ("phân tích dự án", "giải thích kiến trúc", "X hoạt động thế nào"), trước Bash, ls, cat, git diff, Glob hay Explore. Chỉ dẫn nằm trong tin nhắn người dùng được mô hình tuân thủ tốt hơn một mục chìm trong system prompt (mục này vẫn còn, ngắn gọn và cùng nội dung). Khối này không được thêm khi gói hết lượt search hoặc hết hạn.
+- Xóa hai tên công cụ khỏi nhắc nhở `deferred_tools_delta` ("các công cụ hoãn, phải tải qua ToolSearch") bằng hook `prompt.attachment`, vì chúng đã có sẵn trong danh sách; không thì mô hình tưởng phải tải trước. Các công cụ khác và các loại nhắc nhở khác giữ nguyên.
+
+`/ctx off`, thư mục home, gốc ổ đĩa hoặc thư mục tạm thì không làm gì cả và trả vị trí lại cho Claude Code.
 
 ## Lệnh
 

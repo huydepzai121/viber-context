@@ -88,14 +88,35 @@ export function withFilters(input: Record<string, unknown>): string {
 
 export const PROMPT_SECTION = [
   '# Codebase retrieval (local context engine)',
-  'This project is indexed by a local context engine. Use `mcp__viber-context__codebase_retrieval` to find code by meaning.',
-  '- When a task needs understanding of code that is not yet in your context, call codebase_retrieval first with a detailed natural-language request (what you are looking for, where it likely lives, why you need it) instead of reading many files one by one.',
-  '- One well-formed request beats several narrow ones. Put the whole question in one request.',
-  '- Use Grep/Glob for exact identifiers, strings or file names. Use `mcp__viber-context__file_retrieval` when you already know the file but not the lines.',
-  '- Broad questions ("analyze this project", "explain the architecture", "how does X work", "where is Y handled", onboarding or overview requests) start with codebase_retrieval, e.g. "architecture overview: entry points, main modules, how requests flow"; then Read the specific files it points to. Use ls/cat/Bash only to list folders or read a known file, never to discover how the code works. One or two retrievals are normal for an overview.',
-  '- Skip retrieval for questions that do not need the codebase (general knowledge, small edits to code already in context).',
-  '- Searches are a limited paid quota: avoid repeated near-identical queries and do not search speculatively.',
+  'ALWAYS call `mcp__viber-context__codebase_retrieval` FIRST for any question about this codebase (overview, architecture, how X works, where Y is, analyze or review the project), before Bash, ls, cat, git diff, Glob or reading files. Use it instead of the Explore subagent. Put the whole question in one detailed natural-language request, e.g. "architecture overview: entry points, main modules, how requests flow". Then Read only the files it points to.',
+  'Use `mcp__viber-context__file_retrieval` to find lines inside a file you already know. Use Grep/Glob only for exact identifiers, strings or file names.',
+  'Do not repeat near-identical queries.',
 ].join('\n')
+
+// Appended to the first user message as a project instruction: instructions in the
+// user-message context (like CLAUDE.md) are followed far more reliably than a system section.
+export const CONTEXT_BLOCK_NAME = 'viberContext'
+export const CONTEXT_BLOCK = [
+  'This project is indexed by a local context engine (viber-context).',
+  'When asked about the codebase, project structure, how something works, or to analyze/review/explain this project, ALWAYS call mcp__viber-context__codebase_retrieval FIRST, before Bash, ls, cat, git diff, Glob or reading files. Use it instead of the Explore subagent. Then Read only the files it points to.',
+  'Use mcp__viber-context__file_retrieval to find lines inside a known file. Use Grep/Glob only for exact identifiers or file names.',
+].join('\n')
+
+// The engine lists every MCP tool it keeps behind ToolSearch in a deferred_tools_delta
+// reminder, one name per line. The retrieval tools are already in the tool list, so the
+// reminder would wrongly say they must be loaded first: drop their lines, and a paragraph
+// left with only its heading, and nothing at all when no name remains.
+export function stripToolNames(text: string, names: readonly string[]): string | null {
+  const drop = new Set(names)
+  const kept: string[] = []
+  for (const paragraph of text.split(/\n{2,}/)) {
+    const lines = paragraph.split('\n')
+    const rest = lines.filter(line => !drop.has(line.trim()))
+    if (rest.length === lines.length) kept.push(paragraph)
+    else if (rest.length > 1 || (rest.length === 1 && !rest[0].trim().endsWith(':'))) kept.push(rest.join('\n'))
+  }
+  return kept.length === 0 ? null : kept.join('\n\n')
+}
 
 export const PROMPT_SECTION_UNAVAILABLE = [
   '# Codebase retrieval (local context engine)',

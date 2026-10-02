@@ -9,7 +9,7 @@
       "name": "viber-context",
       "source": "./plugin",
       "description": "Tự khởi động, đăng ký và lập chỉ mục dự án với vibervn-context-engine; cho Claude công cụ truy xuất codebase như Augment",
-      "version": "0.2.2",
+      "version": "0.2.3",
       "author": { "name": "Nguyễn Thế Huy" }
     }
   ]
