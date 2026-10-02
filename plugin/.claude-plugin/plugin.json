@@ -1,6 +1,6 @@
 {
   "name": "viber-context",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Tự khởi động, đăng ký và lập chỉ mục dự án với vibervn-context-engine; cho Claude công cụ truy xuất codebase như Augment",
   "author": { "name": "Nguyễn Thế Huy" },
   "types": "./types/index.d.ts"

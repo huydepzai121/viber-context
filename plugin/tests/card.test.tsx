@@ -21,6 +21,13 @@ const SAMPLE = [
   '6: }',
 ].join('\n')
 
+const result = (id: string) => ({
+  plugin: 'viber-context',
+  surface: 'terminal',
+  component: 'ToolResult',
+  props: { tool_use_id: id, tool: TOOL, output: SAMPLE, isErrored: false },
+}) as const
+
 const use = (tool: string, request: string, props: Record<string, boolean> = {}) => ({
   plugin: 'viber-context',
   surface: 'terminal',
@@ -122,15 +129,14 @@ test('an expired plan says so', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: 'Plan expired. Use Grep / Read instead; renew the plan at 127.0.0.1:6699.' })).toBeDefined()
 })
 
-test('the raw result row is hidden for these tools', async ($, on) => {
-  setup(on, WIN)
+test('the raw result row is hidden once a card record stands in for it', async ($, on) => {
+  const fake = setup(on, WIN)
+  fake.mcpResult = { result: SAMPLE }
   await $.session.start(session)
-  const ui = await $.ui.mount({
-    plugin: 'viber-context',
-    surface: 'terminal',
-    component: 'ToolResult',
-    props: { tool_use_id: 'tu1', tool: TOOL, output: SAMPLE, isErrored: false },
-  })
+  await fake.clock.advance(5000)
+  await $.tool.call({ tool: TOOL, tool_use_id: 'tu1', information_request: 'x' })
+  await fake.clock.settle()
+  const ui = await $.ui.mount(result('tu1'))
 
   expect(await ui.findAll({ type: 'Text' })).toHaveLength(0)
 })

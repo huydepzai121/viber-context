@@ -92,3 +92,49 @@ test('an index run that never ends keeps the plan numbers beside a short note', 
   expect(line).toContain('còn 9.992 search')
   expect(line).toContain('· chỉ mục chưa xong (/ctx reindex)')
 })
+
+test('a poll with no new progress keeps the last ETA instead of dropping it', async ($, on) => {
+  const fake = setup(on, { ...WIN, first: true })
+  fake.script = [embedding(347, 1084), embedding(600, 1084), embedding(600, 1084), embedding(600, 1084), DONE]
+  await $.session.start(session)
+  await fake.clock.advance(20_000)
+
+  const bars = fake.statuses.filter(s => s.includes('600/1.084'))
+  expect(bars.length).toBeGreaterThan(1)
+  expect(bars.every(s => s.includes('· còn ~'))).toBe(true)
+})
+
+test('an empty project gets the ready line and no toast', async ($, on) => {
+  const fake = setup(on, { ...WIN, first: true })
+  fake.script = [{ state: 'idle', phase: 'idle', indexed_files: 0, total_files: 0, last_indexed_at: '2026-10-03T00:05:00Z' }]
+  await $.session.start(session)
+  await fake.clock.advance(10_000)
+
+  expect(fake.statuses.at(-1)).toMatch(/^ctx ● 0 file/)
+  expect(fake.toasts).toHaveLength(0)
+})
+
+test('a first run that never ends: no toast, the suffix keeps the plan numbers', async ($, on) => {
+  const fake = setup(on, { ...WIN, first: true })
+  fake.script = [embedding(7, 0)]
+  await $.session.start(session)
+  await fake.clock.advance(11 * 60_000)
+
+  expect(fake.toasts).toHaveLength(0)
+  const line = fake.statuses.at(-1)!
+  expect(line).toContain('còn 9.992 search')
+  expect(line).toContain('· chỉ mục chưa xong (/ctx reindex)')
+})
+
+test('an engine error during a first run shows the error and stops polling', async ($, on) => {
+  const fake = setup(on, { ...WIN, first: true })
+  fake.script = [embedding(0, 0), { state: 'error', phase: 'idle', indexed_files: 0, total_files: 0, last_indexed_at: null, error: 'boom' }]
+  await $.session.start(session)
+  await fake.clock.advance(10_000)
+
+  expect(fake.statuses.at(-1)).toBe('ctx ✗ lỗi lập chỉ mục')
+  expect(fake.toasts).toHaveLength(0)
+  const polled = fake.calls.filter(c => c.path.endsWith('/status')).length
+  await fake.clock.advance(30_000)
+  expect(fake.calls.filter(c => c.path.endsWith('/status')).length).toBe(polled)
+})

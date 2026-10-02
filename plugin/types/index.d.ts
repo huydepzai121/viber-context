@@ -41,13 +41,16 @@ export type CardRow = {
 }
 
 // What the transcript card draws for one retrieval call. `skipped` is set when
-// the call never reached a search: 'quota' and 'expired' by the plan, 'failed'
-// when the engine could not answer.
+// the call did not produce results: 'quota' and 'expired' by the plan, 'off' by
+// /ctx off or an unindexed directory (all skipped without calling the engine),
+// 'failed' when the call was malformed or the engine could not answer. `note` is
+// the reason line the card shows for 'off' and 'failed'.
 export type Card = {
   ms: number
   chunks: number
   rows: CardRow[]
-  skipped: '' | 'quota' | 'expired' | 'failed'
+  skipped: '' | 'quota' | 'expired' | 'off' | 'failed'
+  note: string
 }
 
 // The active plan as the usage endpoint reports it. Never holds a key or invoice.

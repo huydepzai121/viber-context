@@ -25,7 +25,13 @@ Phần dặn trong system prompt (tiếng Anh) bảo Claude gọi retrieval trư
 
 ## Thẻ kết quả trong hội thoại
 
-Mỗi lần gọi `codebase_retrieval` / `file_retrieval` hiện một thẻ (chữ trên thẻ bằng tiếng Anh, cùng kiểu thẻ của plugin acp-ui): `✓ ◎ Retrieval <câu hỏi>` và bên phải `4 chunks · 0.8s`; tối đa 4 dòng kết quả `đường/dẫn#L10-24`, dòng code đầu của khối, `← nơi gọi`, `→ hàm được gọi` (đọc từ chính văn bản engine trả về, không đọc được thì không có dòng nào); cuối thẻ `9,991 searches left` (`⚠` màu vàng khi sắp hết). Đang chạy thẻ nền xanh với `◌`. Gọi bị bỏ qua vì hết lượt hoặc hết hạn thì `✗ ... skipped` kèm gợi ý dùng Grep / Read. Dòng kết quả thô bên dưới được ẩn (Claude vẫn nhận đủ văn bản); lỗi vẫn hiện như thường.
+Mỗi lần gọi `codebase_retrieval` / `file_retrieval` hiện một thẻ (chữ trên thẻ bằng tiếng Anh, cùng kiểu thẻ của plugin acp-ui): `✓ ◎ Retrieval <câu hỏi>` và bên phải `4 chunks · 0.8s`; tối đa 4 dòng kết quả `đường/dẫn#L10-24`, dòng code đầu của khối, `← nơi gọi`, `→ hàm được gọi` (đọc từ chính văn bản engine trả về, không đọc được thì không có dòng nào); cuối thẻ `9,991 searches left` (`⚠` màu vàng khi sắp hết). Đang chạy thẻ nền xanh với `◌`. Gọi bị bỏ qua vì hết lượt hoặc hết hạn thì `✗ ... skipped` kèm gợi ý dùng Grep / Read. Gọi sai tham số hoặc engine lỗi thì thẻ hiện `✗ ... failed` kèm dòng lý do. Dòng kết quả thô bên dưới chỉ được ẩn khi thẻ có bản ghi (Claude vẫn nhận đủ văn bản); lỗi vẫn hiện như thường.
+
+Bản ghi thẻ (tối đa 50 lần gọi gần nhất) chỉ nằm trong bộ nhớ của phiên đang chạy. Sau khi resume phiên cũ, các lần gọi trước đó không có bản ghi nên hiện thẻ trung tính `•` (không có số liệu) và dòng kết quả mặc định của Claude Code, không bị ẩn. Nếu Claude Code gộp các lần đọc/tìm liên tiếp thành một dòng đếm (ToolGroup) mà trong đó có lần gọi retrieval, plugin mở nhóm ra để mỗi lần gọi là một thẻ riêng; nhóm không có retrieval thì giữ nguyên.
+
+## Vì sao hai công cụ luôn có sẵn
+
+Mặc định Claude Code giấu công cụ MCP sau ToolSearch (mô hình chỉ thấy tên và hiếm khi tải). Khi dự án đang bật, plugin chuyển hai công cụ vào danh sách công cụ của prompt (`tool.describe` với `isDeferred: false`) và system prompt dặn bắt đầu bằng `codebase_retrieval` cho các câu hỏi rộng như "phân tích dự án", "giải thích kiến trúc". `/ctx off`, thư mục home hoặc gốc ổ đĩa thì trả vị trí lại cho Claude Code.
 
 ## Lệnh
 

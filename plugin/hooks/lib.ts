@@ -73,6 +73,7 @@ export const PROMPT_SECTION = [
   '- When a task needs understanding of code that is not yet in your context, call codebase_retrieval first with a detailed natural-language request (what you are looking for, where it likely lives, why you need it) instead of reading many files one by one.',
   '- One well-formed request beats several narrow ones. Put the whole question in one request.',
   '- Use Grep/Glob for exact identifiers, strings or file names. Use `mcp__viber-context__file_retrieval` when you already know the file but not the lines.',
+  '- Broad questions ("analyze this project", "explain the architecture", "how does X work", "where is Y handled", onboarding or overview requests) start with codebase_retrieval, e.g. "architecture overview: entry points, main modules, how requests flow"; then Read the specific files it points to. Use ls/cat/Bash only to list folders or read a known file, never to discover how the code works. One or two retrievals are normal for an overview.',
   '- Skip retrieval for questions that do not need the codebase (general knowledge, small edits to code already in context).',
   '- Searches are a limited paid quota: avoid repeated near-identical queries and do not search speculatively.',
 ].join('\n')

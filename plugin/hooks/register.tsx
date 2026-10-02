@@ -248,8 +248,10 @@ async function pollOnce($: EngineInterface, norm: string): Promise<void> {
 
     // ETA from the rate between the first progress sample and this one.
     let { sampleAt, sampleDone } = cur
-    let etaMs = -1
-    if (state === 'indexing' && phase === 'embedding' && total > 0) {
+    // A poll with no new progress keeps the last ETA rather than dropping it.
+    let etaMs = cur.etaMs
+    if (!(state === 'indexing' && phase === 'embedding' && total > 0)) etaMs = -1
+    else {
       if (sampleAt === 0) {
         sampleAt = now
         sampleDone = indexed
@@ -265,7 +267,7 @@ async function pollOnce($: EngineInterface, norm: string): Promise<void> {
     await refreshStatus($)
     if (settled || failed) stopPolling()
     // Only a first run is worth a toast; later runs finish quietly.
-    if (settled && cur.first) $.ui.toast(`✓ viber-context: đã lập chỉ mục ${vn(indexed)} file trong ${duration(now - cur.startedAt)}`)
+    if (settled && cur.first && indexed > 0) $.ui.toast(`✓ viber-context: đã lập chỉ mục ${vn(indexed)} file trong ${duration(now - cur.startedAt)}`)
   } catch {
     // A failed poll is retried on the next tick.
   }
@@ -333,31 +335,33 @@ const reply = (body: string) => ({ result: body, text: body })
 const fallback = (why: string): string =>
   `Không truy xuất được codebase qua context engine (${why}). Hãy dùng Grep/Glob/Read để tìm code thay thế.`
 
-type Outcome = { text: string; skipped: Card['skipped'] }
-const unavailable = (body: string): Outcome => ({ text: body, skipped: 'failed' })
+// What a call came to: the text Claude reads, and for the card why it has no results.
+type Outcome = { text: string; skipped: Card['skipped']; note: string }
+const ok = (body: string): Outcome => ({ text: body, skipped: '', note: '' })
+const unavailable = (body: string, skipped: Card['skipped'], note: string): Outcome => ({ text: body, skipped, note })
 
 // The shared body of both tools: gate on mode and plan, post to the engine, relay `result`.
 async function retrieve($: EngineInterface, path: string, payload: Fields): Promise<Outcome> {
   const mode = await read($, modeAtom)
-  if (mode === 'skipped') return unavailable(fallback('thư mục này là thư mục home hoặc gốc ổ đĩa nên không được lập chỉ mục'))
-  if (mode === 'off') return unavailable('Truy xuất codebase đang tắt cho dự án này (/ctx on để bật lại). Hãy dùng Grep/Glob/Read.')
+  if (mode === 'skipped') return unavailable(fallback('thư mục này là thư mục home hoặc gốc ổ đĩa nên không được lập chỉ mục'), 'off', 'Not available in this directory. Use Grep / Read instead.')
+  if (mode === 'off') return unavailable('Truy xuất codebase đang tắt cho dự án này (/ctx on để bật lại). Hãy dùng Grep/Glob/Read.', 'off', 'Retrieval is off for this project (/ctx on). Use Grep / Read instead.')
   const level = planLevel(await read($, planAtom), await $.clock.now())
-  if (level === 'expired') return { text: fallback('gói dịch vụ của context engine đã hết hạn, không gọi engine'), skipped: 'expired' }
-  if (level === 'out') return { text: fallback('đã hết lượt search của gói dịch vụ, không gọi engine'), skipped: 'quota' }
+  if (level === 'expired') return { text: fallback('gói dịch vụ của context engine đã hết hạn, không gọi engine'), skipped: 'expired', note: '' }
+  if (level === 'out') return { text: fallback('đã hết lượt search của gói dịch vụ, không gọi engine'), skipped: 'quota', note: '' }
   const root = await read($, rootAtom)
   const res = await api($, 'POST', path, { ...payload, workspace_full_path: root })
-  if (res.status === 0) return unavailable(fallback('engine chưa chạy'))
+  if (res.status === 0) return unavailable(fallback('engine chưa chạy'), 'failed', 'Engine unavailable. Use Grep / Read instead.')
   // The engine answered, so a search was spent (or refused): refresh the numbers.
   detach(refreshPlan($))
-  if (!res.ok) return unavailable(fallback(`engine trả HTTP ${res.status}: ${res.body.slice(0, 300)}`))
+  if (!res.ok) return unavailable(fallback(`engine trả HTTP ${res.status}: ${res.body.slice(0, 300)}`), 'failed', `Engine error (HTTP ${res.status}). Use Grep / Read instead.`)
   const out = parse(res.body).result
-  return { text: typeof out === 'string' ? out : res.body, skipped: '' }
+  return ok(typeof out === 'string' ? out : res.body)
 }
 
 // Keeps what the transcript card draws for this call; the newest MAX_CARDS stay.
 async function recordCard($: EngineInterface, id: string, startedAt: number, out: Outcome): Promise<void> {
   const parsed = out.skipped === '' ? parseRetrieval(out.text) : { chunks: 0, rows: [] }
-  const card: Card = { ms: Math.max(0, (await $.clock.now()) - startedAt), chunks: parsed.chunks, rows: parsed.rows, skipped: out.skipped }
+  const card: Card = { ms: Math.max(0, (await $.clock.now()) - startedAt), chunks: parsed.chunks, rows: parsed.rows, skipped: out.skipped, note: out.note }
   await update($, cardsAtom, all => {
     const next = { ...all, [id]: card }
     const ids = Object.keys(next)
@@ -458,11 +462,11 @@ function split(Text: TextEl, bg: string, width: number, left: Seg[], right: Seg[
   return paint(Text, bg, width, rightCells > 0 ? [...shown, { text: ' '.repeat(gap) }, ...right] : shown)
 }
 
-const SKIPPED: Record<Exclude<Card['skipped'], ''>, string> = {
-  quota: 'Search quota used up. Use Grep / Read instead; renew the plan at 127.0.0.1:6699.',
-  expired: 'Plan expired. Use Grep / Read instead; renew the plan at 127.0.0.1:6699.',
-  failed: 'Engine unavailable. Use Grep / Read instead.',
-}
+// The line under a card header saying why a call has no results.
+const reasonOf = (card: Card): string =>
+  card.skipped === 'quota' ? 'Search quota used up. Use Grep / Read instead; renew the plan at 127.0.0.1:6699.'
+  : card.skipped === 'expired' ? 'Plan expired. Use Grep / Read instead; renew the plan at 127.0.0.1:6699.'
+  : card.note
 
 async function retrievalCard($: EngineInterface, e: { props: { tool_use_id: string; input: unknown; isRunning: boolean; isErrored: boolean; isInterrupted: boolean }; viewport?: { columns?: number } }, label: string, Box: BoxEl, Text: TextEl): Promise<RenderElement> {
   const props = e.props
@@ -471,10 +475,15 @@ async function retrievalCard($: EngineInterface, e: { props: { tool_use_id: stri
   const width = cardWidth(e.viewport?.columns)
   const bg = props.isRunning ? C.running : C.card
   const bad = props.isErrored || props.isInterrupted || (card !== undefined && card.skipped !== '')
-  const status: Seg = props.isRunning ? { text: '◌', color: C.run } : bad ? { text: '✗', color: C.error } : { text: '✓', color: C.ok }
+  // A finished call with no record (a resumed session, a call this plugin never saw) is neither a success nor a failure.
+  const status: Seg = props.isRunning ? { text: '◌', color: C.run }
+    : bad ? { text: '✗', color: C.error }
+    : card === undefined ? { text: '•', color: C.dim }
+    : { text: '✓', color: C.ok }
   const request = text(fields(props.input).information_request).replace(/\s+/g, ' ').trim()
   const right: Seg[] =
     card === undefined || props.isRunning ? []
+    : card.skipped === 'failed' ? [{ text: 'failed', color: C.dim }]
     : card.skipped !== '' ? [{ text: 'skipped', color: C.dim }]
     : [{ text: `${card.chunks} ${card.chunks === 1 ? 'chunk' : 'chunks'} · ${(card.ms / 1000).toFixed(1)}s`, color: C.dim }]
 
@@ -483,7 +492,7 @@ async function retrievalCard($: EngineInterface, e: { props: { tool_use_id: stri
   ]
   if (card !== undefined && !props.isRunning) {
     if (card.skipped !== '') {
-      rows.push(paint(Text, bg, width, fitSegs([{ text: '  ' }, { text: SKIPPED[card.skipped], color: C.soft }], width - 2)))
+      rows.push(paint(Text, bg, width, fitSegs([{ text: '  ' }, { text: reasonOf(card), color: C.soft }], width - 2)))
     }
     for (const row of card.rows.slice(0, CARD_ROWS)) {
       // The code line gives way first: the path and the caller/callee tags stay whole.
@@ -520,11 +529,21 @@ const CARD_LABEL: Record<string, string> = { [RETRIEVAL_ID]: 'Retrieval', [FILE_
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    // Decided before the tools register: their placement (tool.describe) reads the mode.
+    const cwd = await $.session.cwd()
+    const root = await projectRoot($, cwd)
+    const norm = normalizeRepo(root)
+    await update($, rootAtom, () => root)
+    const skipped = isFilesystemRoot(norm) || (await isHome($, norm))
+    const disabled = !skipped && (await $.store.get(disabledKey(norm))) === true
+    const mode: Mode = skipped ? 'skipped' : disabled ? 'off' : 'on'
+    await update($, modeAtom, () => mode)
     await $.tool.register({
       name: RETRIEVAL,
       description: [
         'Semantic search over this project\'s indexed codebase (local context engine). Describe what you need in natural language and it returns the most relevant code snippets with file paths and line ranges.',
         'Use it for "where / how is X done" questions about THIS codebase, and before editing code you have not read: write one detailed request (what, where, why) instead of reading many files.',
+        'Start with it for broad questions too ("analyze this project", "explain the architecture", "how does X work", "where is Y handled", onboarding or overview): ask e.g. "architecture overview: entry points, main modules, how a request flows", then Read the specific files it points to. Do not use ls/cat/Bash to discover how the code works; only to list folders or read a known file.',
         'Do NOT use it for exact identifiers, strings or file names (use Grep/Glob) or for questions that are not about the code. Each search uses a limited paid quota, so avoid near-identical repeats.',
         'Optional filters: filter_kind (e.g. function, class), filter_lang (e.g. typescript, rust), filter_path (a path prefix such as src/api).',
       ].join(' '),
@@ -562,20 +581,21 @@ export const register: Register = on => {
       argumentHint: '[reindex|goi|on|off]',
     })
 
-    const cwd = await $.session.cwd()
-    const root = await projectRoot($, cwd)
-    const norm = normalizeRepo(root)
-    await update($, rootAtom, () => root)
-    const skipped = isFilesystemRoot(norm) || (await isHome($, norm))
-    const disabled = !skipped && (await $.store.get(disabledKey(norm))) === true
-    const mode: Mode = skipped ? 'skipped' : disabled ? 'off' : 'on'
-    await update($, modeAtom, () => mode)
     if (mode === 'on') {
       // Booting can take a while (engine start); the session does not wait for it.
       detach(boot($, norm, isWindowsPath(root)))
     }
     return next(e)
   })
+
+  // MCP tools sit behind ToolSearch by default and the model rarely loads them, so
+  // retrieval would go unused: where it is enabled, put the schemas in the prompt's list.
+  for (const id of [RETRIEVAL_ID, FILE_RETRIEVAL_ID]) {
+    on('tool.describe', { tool: id }, async ($, e, next) => {
+      const described = await next(e)
+      return (await read($, modeAtom)) === 'on' ? { ...described, isDeferred: false } : described
+    })
+  }
 
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
@@ -587,8 +607,12 @@ export const register: Register = on => {
 
   on('tool.call', { tool: RETRIEVAL_ID }, async ($, e) => {
     const input = fields(e)
-    if (text(input.information_request).trim() === '') return reply('Thiếu information_request. Hãy mô tả chi tiết thứ cần tìm.')
     const startedAt = await $.clock.now()
+    if (text(input.information_request).trim() === '') {
+      const out = unavailable('Thiếu information_request. Hãy mô tả chi tiết thứ cần tìm.', 'failed', 'Missing information_request.')
+      await recordCard($, e.tool_use_id, startedAt, out)
+      return reply(out.text)
+    }
     const out = await retrieve($, '/api/mcp-tool', { information_request: withFilters(input) })
     await recordCard($, e.tool_use_id, startedAt, out)
     return reply(out.text)
@@ -596,11 +620,13 @@ export const register: Register = on => {
 
   on('tool.call', { tool: FILE_RETRIEVAL_ID }, async ($, e) => {
     const input = fields(e)
+    const startedAt = await $.clock.now()
     if (text(input.file_path).trim() === '' || text(input.information_request).trim() === '') {
-      return reply('Thiếu file_path hoặc information_request.')
+      const out = unavailable('Thiếu file_path hoặc information_request.', 'failed', 'Missing file_path or information_request.')
+      await recordCard($, e.tool_use_id, startedAt, out)
+      return reply(out.text)
     }
     const top = typeof input.top_k === 'number' && Number.isFinite(input.top_k) ? { top_k: Math.max(1, Math.round(input.top_k)) } : {}
-    const startedAt = await $.clock.now()
     const out = await retrieve($, '/api/mcp-tool/file-retrieval', {
       file_path: text(input.file_path).trim(),
       information_request: text(input.information_request).trim(),
@@ -619,6 +645,8 @@ export const register: Register = on => {
       if (mode === 'skipped') return { text: 'Thư mục này là thư mục home hoặc gốc ổ đĩa, không được lập chỉ mục.' }
       await $.store.set(disabledKey(norm), arg === 'off')
       await update($, modeAtom, () => (arg === 'off' ? 'off' : 'on'))
+      // The placement answer is cached for the session.
+      $.ui.invalidate('tool.describe')
       if (arg === 'off') {
         stopPolling()
         stopPlanTimer()
@@ -645,10 +673,22 @@ export const register: Register = on => {
     return retrievalCard($, e, label, Box, Text)
   })
 
-  on('ui.render', { component: 'ToolResult', surface: 'terminal' }, ($, e, next) => {
+  // Hidden only where a card record exists to stand in for it; a call from before
+  // this session's records (a resumed transcript) keeps its default result row.
+  on('ui.render', { component: 'ToolResult', surface: 'terminal' }, async ($, e, next) => {
     if (e.props.isErrored || CARD_LABEL[e.props.tool] === undefined) return next(e)
+    if ((await read($, cardsAtom))[e.props.tool_use_id] === undefined) return next(e)
     const { Box } = $.ui.resolve(e)
     return <Box />
+  })
+
+  // A folded run of reads and searches would hide a retrieval call inside a count
+  // line, with no card. Unfolding it makes every call its own ToolUse row, so the
+  // card hook above draws the retrieval ones and the other hooks draw the rest;
+  // a group without a retrieval call is left to whoever draws it.
+  on('ui.render', { component: 'ToolGroup', surface: 'terminal' }, ($, e, next) => {
+    if (e.props.isExpanded || !e.props.calls.some(call => CARD_LABEL[call.tool] !== undefined)) return next(e)
+    return next({ ...e, props: { ...e.props, isExpanded: true } })
   })
 
 }
