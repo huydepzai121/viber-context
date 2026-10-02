@@ -3,7 +3,7 @@ import type { BoxProps, ElementConstructor, EngineInterface, Register, RenderEle
 
 import type { Card, IndexInfo, Mode, PlanInfo } from '../types'
 import {
-  ENGINE, ENGINE_PORT, NO_INDEX, PROMPT_SECTION, PROMPT_SECTION_UNAVAILABLE, daysLeft, duration, en, isFilesystemRoot,
+  ENGINE, ENGINE_PORT, NO_INDEX, PROMPT_SECTION, PROMPT_SECTION_UNAVAILABLE, daysLeft, duration, en, isFilesystemRoot, isScratchPath,
   isWindowsPath, normalizeRepo, parseRetrieval, planBlock, planLevel, progressLine, repoId, shortPath, vn, withFilters,
 } from './lib'
 
@@ -23,7 +23,7 @@ const FIRST_GRACE_TICKS = 10
 
 const rootAtom = atom({ plugin: 'viber-context', key: 'root' } as const, '')
 // 'on' retrieval is wired up; 'off' the person turned it off for this root;
-// 'skipped' the directory is a home or filesystem root, never indexed.
+// 'skipped' the directory is a home, filesystem root or throwaway (temp / Desktop scratch) directory, never indexed.
 const modeAtom = atom({ plugin: 'viber-context', key: 'mode' } as const, 'skipped' as Mode)
 const engineAtom = atom({ plugin: 'viber-context', key: 'engine' } as const, 'unknown' as 'unknown' | 'up' | 'down')
 const indexAtom = atom({ plugin: 'viber-context', key: 'index' } as const, NO_INDEX)
@@ -328,7 +328,14 @@ async function isHome($: EngineInterface, norm: string): Promise<boolean> {
   return homes.some(h => typeof h === 'string' && h !== '' && normalizeRepo(h) === norm)
 }
 
-const disabledKey = (norm: string): string => `disabled:${norm}`
+// Throwaway directories (Claude Desktop scratch workspace, OS temp dir) hold no project.
+async function isScratch($: EngineInterface, norm: string): Promise<boolean> {
+  const values = [await $.env.get('TEMP'), await $.env.get('TMP'), await $.env.get('TMPDIR')]
+  const temps = values.filter((v): v is string => typeof v === 'string' && v.trim() !== '').map(v => normalizeRepo(v.trim()))
+  return isScratchPath(norm, temps)
+}
+
+const disabledKey =(norm: string): string => `disabled:${norm}`
 
 const reply = (body: string) => ({ result: body, text: body })
 
@@ -343,7 +350,7 @@ const unavailable = (body: string, skipped: Card['skipped'], note: string): Outc
 // The shared body of both tools: gate on mode and plan, post to the engine, relay `result`.
 async function retrieve($: EngineInterface, path: string, payload: Fields): Promise<Outcome> {
   const mode = await read($, modeAtom)
-  if (mode === 'skipped') return unavailable(fallback('thư mục này là thư mục home hoặc gốc ổ đĩa nên không được lập chỉ mục'), 'off', 'Not available in this directory. Use Grep / Read instead.')
+  if (mode === 'skipped') return unavailable(fallback('thư mục này là thư mục home, gốc ổ đĩa hoặc thư mục tạm nên không được lập chỉ mục'), 'off', 'Not available in this directory. Use Grep / Read instead.')
   if (mode === 'off') return unavailable('Truy xuất codebase đang tắt cho dự án này (/ctx on để bật lại). Hãy dùng Grep/Glob/Read.', 'off', 'Retrieval is off for this project (/ctx on). Use Grep / Read instead.')
   const level = planLevel(await read($, planAtom), await $.clock.now())
   if (level === 'expired') return { text: fallback('gói dịch vụ của context engine đã hết hạn, không gọi engine'), skipped: 'expired', note: '' }
@@ -380,7 +387,7 @@ async function describeState($: EngineInterface, planOnly: boolean): Promise<str
   if (planOnly) return plan
   lines.push(`Engine: ${up ? `đang chạy (${ENGINE})` : 'chưa chạy'}`)
   lines.push(`Gốc dự án: ${root || '(chưa xác định)'}`)
-  lines.push(`Tự lập chỉ mục: ${mode === 'on' ? 'bật' : mode === 'off' ? 'tắt (/ctx on để bật)' : 'bỏ qua (thư mục home hoặc gốc ổ đĩa)'}`)
+  lines.push(`Tự lập chỉ mục: ${mode === 'on' ? 'bật' : mode === 'off' ? 'tắt (/ctx on để bật)' : 'bỏ qua (thư mục home, gốc ổ đĩa hoặc thư mục tạm)'}`)
   if (up && root !== '') {
     const norm = normalizeRepo(root)
     const config = parse((await api($, 'GET', '/api/config')).body)
@@ -534,7 +541,7 @@ export const register: Register = on => {
     const root = await projectRoot($, cwd)
     const norm = normalizeRepo(root)
     await update($, rootAtom, () => root)
-    const skipped = isFilesystemRoot(norm) || (await isHome($, norm))
+    const skipped = isFilesystemRoot(norm) || (await isHome($, norm)) || (await isScratch($, norm))
     const disabled = !skipped && (await $.store.get(disabledKey(norm))) === true
     const mode: Mode = skipped ? 'skipped' : disabled ? 'off' : 'on'
     await update($, modeAtom, () => mode)
@@ -642,7 +649,7 @@ export const register: Register = on => {
     const norm = normalizeRepo(root)
     const mode = await read($, modeAtom)
     if (arg === 'off' || arg === 'on') {
-      if (mode === 'skipped') return { text: 'Thư mục này là thư mục home hoặc gốc ổ đĩa, không được lập chỉ mục.' }
+      if (mode === 'skipped') return { text: 'Thư mục này là thư mục home, gốc ổ đĩa hoặc thư mục tạm, không được lập chỉ mục.' }
       await $.store.set(disabledKey(norm), arg === 'off')
       await update($, modeAtom, () => (arg === 'off' ? 'off' : 'on'))
       // The placement answer is cached for the session.

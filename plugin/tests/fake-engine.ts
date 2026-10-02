@@ -52,6 +52,8 @@ export type Setup = {
   repos?: readonly string[]
   upAfter?: number
   home?: string
+  // Extra environment values the hook can read (TEMP, TMPDIR, ...).
+  env?: Record<string, string>
   searchLeft?: number
   // The repo was never indexed.
   first?: boolean
@@ -61,7 +63,7 @@ export type Setup = {
 export function setup(on: On, s: Setup): Fake {
   const clock = mock.clock(on, { now: NOW })
   mock.store(on)
-  mock.env(on, { USERPROFILE: s.home ?? 'C:\\Users\\Admin' })
+  mock.env(on, { USERPROFILE: s.home ?? 'C:\\Users\\Admin', ...s.env })
   const fake: Fake = {
     upAfter: s.upAfter ?? 0,
     checks: 0,

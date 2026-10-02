@@ -6,7 +6,7 @@ Làm cho `vibervn-context-engine` chạy trên máy hoạt động giống Augme
 
 ## Mỗi phiên làm gì
 
-1. Lấy gốc dự án (`git rev-parse --show-toplevel`, không có git thì dùng thư mục hiện tại). Bỏ qua hẳn nếu là thư mục home hoặc gốc ổ đĩa.
+1. Lấy gốc dự án (`git rev-parse --show-toplevel`, không có git thì dùng thư mục hiện tại). Bỏ qua hẳn nếu là thư mục home, gốc ổ đĩa hoặc thư mục tạm (thư mục TEMP/TMP/TMPDIR của hệ điều hành và workspace "No folder" của Claude Desktop trong `Claude/scratch-workspaces`).
 2. Nếu engine (`http://127.0.0.1:6699`) chưa trả lời thì khởi động nền `vibervn-context-engine --port 6699`, chờ tối đa 20 giây. Đang chạy thì không đụng.
 3. Chưa có trong `repos` của engine thì thêm vào qua `PUT /api/config` (giữ nguyên mọi trường khác, không bao giờ xoá repo).
 4. Gọi lập chỉ mục tăng dần một lần, theo dõi mỗi 3 giây (tối đa 10 phút).
@@ -31,7 +31,7 @@ Bản ghi thẻ (tối đa 50 lần gọi gần nhất) chỉ nằm trong bộ n
 
 ## Vì sao hai công cụ luôn có sẵn
 
-Mặc định Claude Code giấu công cụ MCP sau ToolSearch (mô hình chỉ thấy tên và hiếm khi tải). Khi dự án đang bật, plugin chuyển hai công cụ vào danh sách công cụ của prompt (`tool.describe` với `isDeferred: false`) và system prompt dặn bắt đầu bằng `codebase_retrieval` cho các câu hỏi rộng như "phân tích dự án", "giải thích kiến trúc". `/ctx off`, thư mục home hoặc gốc ổ đĩa thì trả vị trí lại cho Claude Code.
+Mặc định Claude Code giấu công cụ MCP sau ToolSearch (mô hình chỉ thấy tên và hiếm khi tải). Khi dự án đang bật, plugin chuyển hai công cụ vào danh sách công cụ của prompt (`tool.describe` với `isDeferred: false`) và system prompt dặn bắt đầu bằng `codebase_retrieval` cho các câu hỏi rộng như "phân tích dự án", "giải thích kiến trúc". `/ctx off`, thư mục home, gốc ổ đĩa hoặc thư mục tạm thì trả vị trí lại cho Claude Code.
 
 ## Lệnh
 

@@ -21,7 +21,26 @@ export function isFilesystemRoot(p: string): boolean {
   return p === '' || /^[A-Za-z]:[\\/]*$/.test(p) || /^[\\/]+$/.test(p)
 }
 
-const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+// A throwaway directory that holds no project: a Claude Desktop "No folder"
+// scratch workspace (`...\Claude\scratch-workspaces\...`, either slash style)
+// or the OS temp directory itself or anything inside it. `p` and `tempDirs`
+// are normalizeRepo output; empty temp entries and drive roots are ignored so
+// a bad TMPDIR cannot make every directory look temporary.
+export function isScratchPath(p: string, tempDirs: readonly string[]): boolean {
+  const flat = (s: string): string => s.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  const path = flat(p)
+  const segments = path.split('/')
+  for (let i = 1; i < segments.length; i++) {
+    if (segments[i] === 'scratch-workspaces' && segments[i - 1] === 'claude') return true
+  }
+  return tempDirs.some(t => {
+    if (t === '' || isFilesystemRoot(t)) return false
+    const temp = flat(t)
+    return temp !== '' && (path === temp || path.startsWith(`${temp}/`))
+  })
+}
+
+const B64 ='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
 
 function utf8(s: string): number[] {
   const out: number[] = []
